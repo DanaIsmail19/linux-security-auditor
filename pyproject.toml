@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linux-security-auditor"
+version = "1.0.0"
+description = "A simple open-source CLI tool to audit common Linux security settings"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+keywords = ["linux", "security", "audit", "cli", "hardening"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Security",
+]
+
+[project.scripts]
+linuxaudit = "linuxaudit.cli:main"
+
+[tool.setuptools]
+packages = ["linuxaudit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
