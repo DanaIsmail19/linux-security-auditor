@@ -4,18 +4,16 @@ Each check returns a dict with: name, status, severity, message, recommendation
 """
 
 import os
-import pwd
-import grp
+import re
 import stat
 import subprocess
-import re
 from pathlib import Path
 from typing import Any
 
-PASS  = "PASS"
-WARN  = "WARN"
-FAIL  = "FAIL"
-INFO  = "INFO"
+PASS = "PASS"
+WARN = "WARN"
+FAIL = "FAIL"
+INFO = "INFO"
 
 
 def _run(cmd: list[str]) -> tuple[str, str, int]:
@@ -63,11 +61,11 @@ def check_ssh_config() -> dict[str, Any]:
         return None
 
     checks = [
-        ("PermitRootLogin", ["no", "prohibit-password"], "Root login should be disabled or key-only."),
-        ("PasswordAuthentication", ["no"], "Password auth should be disabled; use SSH keys."),
-        ("PermitEmptyPasswords", ["no"], "Empty passwords must never be permitted."),
-        ("Protocol", ["2"], "Only SSH protocol 2 is secure."),
-        ("X11Forwarding", ["no"], "X11 forwarding exposes security risks if unused."),
+        ("PermitRootLogin",        ["no", "prohibit-password"], "Root login should be disabled or key-only."),
+        ("PasswordAuthentication", ["no"],  "Password auth should be disabled; use SSH keys."),
+        ("PermitEmptyPasswords",   ["no"],  "Empty passwords must never be permitted."),
+        ("Protocol",               ["2"],   "Only SSH protocol 2 is secure."),
+        ("X11Forwarding",          ["no"],  "X11 forwarding exposes security risks if unused."),
     ]
 
     for key, safe_values, rec in checks:
@@ -106,7 +104,6 @@ def check_world_writable_files() -> dict[str, Any]:
                 try:
                     file_stat = os.stat(path)
                     mode = file_stat.st_mode
-                    # World-writable without sticky bit
                     if (mode & stat.S_IWOTH) and not (mode & stat.S_ISVTX):
                         risky_files.append(path)
                 except (PermissionError, FileNotFoundError):
@@ -151,7 +148,6 @@ def check_suid_sgid_binaries() -> dict[str, Any]:
     ])
 
     if not stdout:
-        # Try without parens if shell escaping was an issue — use Python directly
         found = []
         scan_dirs = ["/usr/bin", "/usr/sbin", "/bin", "/sbin", "/usr/lib"]
         for directory in scan_dirs:
@@ -194,8 +190,8 @@ def check_suid_sgid_binaries() -> dict[str, Any]:
 def check_empty_password_accounts() -> dict[str, Any]:
     """Detect user accounts with empty passwords in /etc/shadow."""
     empty_pw_users = []
-
     shadow = Path("/etc/shadow")
+
     if not shadow.exists():
         return {
             "name": "Empty Password Accounts",
@@ -211,7 +207,6 @@ def check_empty_password_accounts() -> dict[str, Any]:
             if len(parts) >= 2:
                 username = parts[0]
                 password = parts[1]
-                # Empty password field or just "!" prefix variants
                 if password == "" or password == "::":
                     empty_pw_users.append(username)
     except PermissionError:
@@ -243,7 +238,6 @@ def check_empty_password_accounts() -> dict[str, Any]:
 
 def check_firewall_status() -> dict[str, Any]:
     """Check if a firewall (ufw, firewalld, or iptables) is active."""
-    # Try ufw
     stdout, _, rc = _run(["ufw", "status"])
     if rc == 0:
         active = "active" in stdout.lower()
@@ -255,7 +249,6 @@ def check_firewall_status() -> dict[str, Any]:
             "recommendation": "Enable ufw: sudo ufw enable" if not active else "No action needed.",
         }
 
-    # Try firewalld
     stdout, _, rc = _run(["firewall-cmd", "--state"])
     if rc == 0:
         active = "running" in stdout.lower()
@@ -267,7 +260,6 @@ def check_firewall_status() -> dict[str, Any]:
             "recommendation": "Start firewalld: sudo systemctl start firewalld" if not active else "No action needed.",
         }
 
-    # Try iptables
     stdout, _, rc = _run(["iptables", "-L", "-n"])
     if rc == 0:
         rules = [l for l in stdout.splitlines() if not l.startswith("Chain") and l.strip()]
@@ -308,12 +300,10 @@ def check_open_ports() -> dict[str, Any]:
     for line in stdout.splitlines()[1:]:
         parts = line.split()
         if len(parts) >= 5:
-            local = parts[3] if "ss" in stdout[:10] else parts[3]
-            ports.append(local)
+            ports.append(parts[3])
 
     risky_ports = ["23", "21", "512", "513", "514", "6000", "6001"]
     found_risky = []
-
     for port_str in ports:
         port_num = port_str.rsplit(":", 1)[-1]
         if port_num in risky_ports:
@@ -402,7 +392,6 @@ def check_password_policy() -> dict[str, Any]:
 
 def check_unattended_upgrades() -> dict[str, Any]:
     """Check if automatic security updates are configured."""
-    # Debian/Ubuntu
     ua_config = Path("/etc/apt/apt.conf.d/20auto-upgrades")
     if ua_config.exists():
         content = ua_config.read_text()
@@ -418,7 +407,6 @@ def check_unattended_upgrades() -> dict[str, Any]:
             ),
         }
 
-    # RHEL/CentOS/Fedora — check dnf-automatic
     dnf_timer = Path("/etc/dnf/automatic.conf")
     if dnf_timer.exists():
         stdout, _, rc = _run(["systemctl", "is-active", "dnf-automatic.timer"])
@@ -444,7 +432,6 @@ def check_core_dumps() -> dict[str, Any]:
     """Check if core dumps are disabled (they can leak sensitive memory)."""
     limits_conf = Path("/etc/security/limits.conf")
     sysctl_conf = Path("/proc/sys/kernel/core_pattern")
-
     core_disabled = False
 
     if limits_conf.exists():
@@ -479,7 +466,113 @@ def check_core_dumps() -> dict[str, Any]:
     }
 
 
-# Registry of all checks
+def check_openssh_cve_patches() -> dict[str, Any]:
+    """Check OpenSSH version against known critical CVEs (USN-8090-1)."""
+
+    # Minimum safe dpkg package versions per Ubuntu codename
+    # Source: https://ubuntu.com/security/notices/USN-8090-1
+    # CVE-2026-3497, CVE-2025-61984, CVE-2025-61985
+    PATCHED_BUILDS = {
+        "questing": "1:10.0p1-5ubuntu5.1",   # Ubuntu 25.10
+        "noble":    "1:9.6p1-3ubuntu13.15",   # Ubuntu 24.04 LTS
+        "jammy":    "1:8.9p1-3ubuntu0.14",    # Ubuntu 22.04 LTS
+    }
+
+    CVE_IDS = "CVE-2026-3497, CVE-2025-61984, CVE-2025-61985"
+    USN     = "USN-8090-1"
+    USN_URL = "https://ubuntu.com/security/notices/USN-8090-1"
+
+    # 1. Get installed package version
+    pkg_version = None
+    stdout, _, rc = _run(["dpkg-query", "-W", "-f=${Version}", "openssh-server"])
+    if rc == 0 and stdout.strip():
+        pkg_version = stdout.strip()
+
+    # 2. Get distro codename from /etc/os-release
+    codename = None
+    os_release = Path("/etc/os-release")
+    if os_release.exists():
+        for line in os_release.read_text().splitlines():
+            if line.startswith("VERSION_CODENAME="):
+                codename = line.split("=", 1)[1].strip().strip('"').lower()
+                break
+
+    # 3. Get SSH version string for display (ssh -V outputs to stderr)
+    _, version_str, _ = _run(["ssh", "-V"])
+    ssh_display = version_str.split(",")[0] if version_str else None
+
+    # 4. OpenSSH not installed at all
+    if not pkg_version and not ssh_display:
+        return {
+            "name": "OpenSSH CVE Patch Check (USN-8090-1)",
+            "status": INFO,
+            "severity": "high",
+            "message": "OpenSSH does not appear to be installed.",
+            "recommendation": "No action needed if SSH is not in use.",
+        }
+
+    # 5. Known Ubuntu release — do exact dpkg version comparison
+    if pkg_version and codename and codename in PATCHED_BUILDS:
+        safe_version = PATCHED_BUILDS[codename]
+        _, _, cmp_rc = _run([
+            "dpkg", "--compare-versions", pkg_version, "ge", safe_version
+        ])
+        is_patched = (cmp_rc == 0)
+
+        if is_patched:
+            return {
+                "name": "OpenSSH CVE Patch Check (USN-8090-1)",
+                "status": PASS,
+                "severity": "high",
+                "message": (
+                    f"OpenSSH {pkg_version} is patched against {CVE_IDS}."
+                ),
+                "recommendation": "No action needed. Keep system updated regularly.",
+            }
+        else:
+            return {
+                "name": "OpenSSH CVE Patch Check (USN-8090-1)",
+                "status": FAIL,
+                "severity": "high",
+                "message": (
+                    f"OpenSSH {pkg_version} is VULNERABLE to {CVE_IDS}. "
+                    f"Minimum safe version for {codename}: {safe_version}."
+                ),
+                "recommendation": (
+                    f"Update immediately:\n"
+                    f"  sudo apt update && sudo apt install --only-upgrade openssh-server openssh-client\n"
+                    f"  Reference: {USN_URL}"
+                ),
+            }
+
+    # 6. Fallback — distro not in known list, report what we found
+    details = []
+    if ssh_display:
+        details.append(f"version: {ssh_display}")
+    if codename:
+        details.append(f"distro: {codename}")
+    if pkg_version:
+        details.append(f"package: {pkg_version}")
+
+    known = ", ".join(PATCHED_BUILDS.keys())
+    return {
+        "name": "OpenSSH CVE Patch Check (USN-8090-1)",
+        "status": WARN,
+        "severity": "high",
+        "message": (
+            f"Cannot auto-verify patch status ({'; '.join(details)}). "
+            f"Automatic check supports: {known}."
+        ),
+        "recommendation": (
+            f"Manually verify you are not vulnerable to {CVE_IDS}.\n"
+            f"  sudo apt update && sudo apt install --only-upgrade openssh-server\n"
+            f"  Reference: {USN_URL}"
+        ),
+    }
+
+
+# ── Registry of all checks ────────────────────────────────────────────────────
+
 ALL_CHECKS = [
     check_ssh_config,
     check_world_writable_files,
@@ -490,4 +583,5 @@ ALL_CHECKS = [
     check_password_policy,
     check_unattended_upgrades,
     check_core_dumps,
+    check_openssh_cve_patches,        # NEW — tracks USN-8090-1
 ]
