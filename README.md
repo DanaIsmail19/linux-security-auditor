@@ -167,7 +167,15 @@ pytest tests/ -v
 ```
 
 ---
+### CVE Tracking
+linuxaudit actively tracks Ubuntu Security Notices (USN) and checks
+whether your installed packages are patched against known vulnerabilities.
 
+| CVE | Severity | Affected | Fixed in |
+|---|---|---|---|
+| CVE-2026-3497 | Critical | OpenSSH GSSAPI Key Exchange | USN-8090-1 |
+| CVE-2025-61984 | High | OpenSSH username control chars | USN-8090-1 |
+| CVE-2025-61985 | High | OpenSSH NULL chars in URIs | USN-8090-1 | 
 ## Contributing
 
 Contributions are welcome! Ideas for new checks and features:
